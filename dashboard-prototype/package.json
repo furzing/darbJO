@@ -1,0 +1,11 @@
+{
+  "name": "darbjo-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DarbJo pitch landing page and USB GPS dashboard",
+  "scripts": {
+    "start": "node serve.js",
+    "test": "node --test tests/telemetry-state.test.js"
+  },
+  "engines": { "node": ">=18" }
+}
