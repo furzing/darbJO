@@ -107,8 +107,102 @@
     return rows.concat(session.logs).map(function (row) { return JSON.stringify(row); }).join('\n') + '\n';
   }
 
+  const TRIP_GAP_MS = 30 * 60 * 1000;  // a longer silence starts a new trip
+  const DATA_GAP_MS = 10 * 1000;       // a longer silence is shown as "no data"
+  const FIX_GAP_MS = 60 * 1000;        // distance is not counted across longer fix gaps
+  const JITTER_M = 8;                  // smaller steps are treated as GPS jitter
+  const MAX_SPEED_MS = 12;             // faster implied speeds are treated as glitches
+
+  function meters(a, b) {
+    const rad = Math.PI / 180, dLat = (b.latitude - a.latitude) * rad, dLon = (b.longitude - a.longitude) * rad;
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.latitude * rad) * Math.cos(b.latitude * rad) * Math.sin(dLon / 2) ** 2;
+    return 2 * 6371000 * Math.asin(Math.min(1, Math.sqrt(h)));
+  }
+
+  function readingTime(row) { return Date.parse(row.received_at); }
+
+  // GPS readings of the most recent trip, oldest first.
+  function tripReadings(logs) {
+    const rows = logs.filter(function (row) { return row.record_type === 'gps_status' && row.details; });
+    let start = rows.length - 1;
+    while (start > 0 && readingTime(rows[start]) - readingTime(rows[start - 1]) <= TRIP_GAP_MS) start--;
+    return rows.slice(Math.max(start, 0));
+  }
+
+  // Consecutive readings with the same GPS state, merged. A segment runs until the next
+  // one starts, unless the hub went silent in between.
+  function segments(rows) {
+    const out = [];
+    rows.forEach(function (row) {
+      const at = readingTime(row), state = row.details.gps_state, last = out[out.length - 1];
+      if (last && last.state === state && at - last.end <= DATA_GAP_MS) {
+        last.end = at; last.count += 1; last.last = row;
+        return;
+      }
+      if (last && at - last.end <= DATA_GAP_MS) last.end = at;
+      out.push({ state: state, start: at, end: at, count: 1, first: row, last: row });
+    });
+    return out;
+  }
+
+  // Runs of consecutive fixes as [[lat, lon], ...] lists; a reading without a fix ends a run.
+  function trail(rows) {
+    const parts = [];
+    let current = null, lastAt = null;
+    rows.forEach(function (row) {
+      const d = row.details, at = readingTime(row);
+      if (d.gps_fix === true && position(d)) {
+        if (!current || at - lastAt > DATA_GAP_MS) { current = []; parts.push(current); }
+        current.push([d.latitude, d.longitude]);
+        lastAt = at;
+      } else current = null;
+    });
+    return parts;
+  }
+
+  function tripStats(rows) {
+    let distance = 0, fixMs = 0, anchor = null, lastFixAt = null, movedAt = null, previous = null;
+    rows.forEach(function (row) {
+      const d = row.details, at = readingTime(row), fix = d.gps_fix === true && position(d);
+      if (previous && previous.fix && at - previous.at <= DATA_GAP_MS) fixMs += at - previous.at;
+      if (fix) {
+        if (!anchor || at - lastFixAt > FIX_GAP_MS) {
+          anchor = { latitude: d.latitude, longitude: d.longitude, at: at };
+          if (movedAt === null) movedAt = at;
+        } else {
+          const step = meters(anchor, d), speed = step / Math.max((at - anchor.at) / 1000, 1);
+          if (step >= JITTER_M && speed <= MAX_SPEED_MS) {
+            distance += step;
+            anchor = { latitude: d.latitude, longitude: d.longitude, at: at };
+            movedAt = at;
+          }
+        }
+        lastFixAt = at;
+      }
+      previous = { at: at, fix: fix };
+    });
+    const start = rows.length ? readingTime(rows[0]) : null, end = rows.length ? readingTime(rows[rows.length - 1]) : null;
+    return { distance: distance, fixMs: fixMs, durationMs: rows.length ? end - start : 0, start: start, end: end, movedAt: movedAt };
+  }
+
+  // Plain-language rating of HDOP. Not an accuracy in meters.
+  function accuracy(hdop) {
+    const value = number(hdop);
+    if (value === null || value <= 0) return null;
+    return value <= 2 ? 'good' : value <= 5 ? 'fair' : 'poor';
+  }
+
+  // 0–3 bars from satellites used in the fix.
+  function satelliteLevel(satellites) {
+    const value = number(satellites);
+    if (value === null) return null;
+    return value >= 7 ? 3 : value >= 4 ? 2 : value >= 1 ? 1 : 0;
+  }
+
   const api = { MAX_LOGS: MAX_LOGS, createSession: createSession, applyMessage: applyMessage,
-    markUnavailable: markUnavailable, log: log, cache: cache, exportLines: exportLines, position: position };
+    markUnavailable: markUnavailable, log: log, cache: cache, exportLines: exportLines, position: position,
+    accuracy: accuracy, satelliteLevel: satelliteLevel, meters: meters, tripReadings: tripReadings,
+    segments: segments, trail: trail, tripStats: tripStats };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BeaconTelemetry = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

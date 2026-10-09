@@ -35,56 +35,100 @@
       </figure>
     </section>
     <div class="session-toolbar" id="sessionToolbar" hidden>
-      <div id="connectionBox" class="connection-box"><span id="connectionText" role="status">Not connected</span><span class="session-label">Pitch prototype</span></div>
-      <div class="session-actions"><button class="button button-secondary" id="previewButton">Preview</button><button class="button button-primary" id="connectButton">Connect hub</button></div>
+      <div class="status-bar" id="statusBar" data-tone="idle">
+        <span class="status-dot" aria-hidden="true"></span>
+        <div class="status-text"><strong id="statusTitle" aria-live="polite">Not connected</strong><span id="statusDetail">Connect the hub to start</span></div>
+        <span class="sample-tag" id="sampleTag" hidden>Sample data</span>
+      </div>
+      <div class="session-actions">
+        <div class="mode-switch" role="group" aria-label="Data source"><button id="liveMode" aria-pressed="true">Live hub</button><button id="previewMode" aria-pressed="false">Sample</button></div>
+        <button class="button button-primary" id="connectButton">Connect hub</button>
+      </div>
     </div>
     <section class="page workspace" data-view="console" aria-labelledby="console-title" hidden>
-      <div class="workspace-heading"><h1 id="console-title" tabindex="-1">In view<span>.</span></h1><p id="modeNote">Your latest position, kept in view.</p></div>
+      <div class="workspace-heading visually-hidden"><h1 id="console-title" tabindex="-1">Live console</h1></div>
       <div class="console-grid">
         <article class="position-panel" aria-label="GPS position">
-          <div class="map-heading"><div><span class="label">GPS reception</span><strong id="gpsSummary">Awaiting GPS status</strong></div><span class="gps-state" id="gpsState">No fix yet</span></div>
           <div class="map-frame">
             <div id="gpsMap" aria-label="GPS position map" tabindex="0"></div>
-            <div class="map-empty" id="mapEmpty"><strong>The next point<br>starts here.</strong><p>Connect your hub to place its GPS fix on the map.</p></div>
-            <div class="map-tools"><button id="mapZoomIn" aria-label="Zoom in">+</button><button id="mapZoomOut" aria-label="Zoom out">−</button><button id="centerMap">Locate fix</button><button id="followMap" aria-pressed="true">Following</button></div>
+            <div class="map-empty" id="mapEmpty">
+              <div class="setup-guide" aria-labelledby="guideTitle">
+                <h2 id="guideTitle">Get your first fix</h2>
+                <ol class="setup-steps">
+                  <li id="stepPlug"><strong>Plug in the hub</strong><span>Use the ESP32 USB cable. Close Arduino Serial Monitor.</span></li>
+                  <li id="stepConnect"><strong>Connect</strong><span id="stepConnectText">Press Connect hub and choose its USB port.</span></li>
+                  <li id="stepFix"><strong id="stepFixTitle">Wait for satellites</strong><span id="stepFixText">Outdoors with open sky, usually 1–2 minutes.</span></li>
+                </ol>
+                <p class="guide-timer" id="guideTimer" hidden></p>
+                <div class="guide-actions" id="guideActions"><button class="button button-primary" id="guideConnect">Connect hub</button><button class="text-button" id="guideSample">Try with sample data</button></div>
+              </div>
+            </div>
+            <div class="map-tools" id="mapTools" hidden><button id="mapZoomIn" aria-label="Zoom in">+</button><button id="mapZoomOut" aria-label="Zoom out">−</button><button id="followMap" aria-pressed="true">Following</button></div>
             <p id="mapNotice" class="map-notice" role="status" hidden></p>
           </div>
           <div class="position-information">
-            <div class="coordinate-block"><span class="label" id="positionLabel">No position acquired</span><strong id="coordinates">Waiting for a GPS fix</strong><p id="positionNote">Your last valid fix stays here when reception drops.</p></div>
-            <div class="fix-metrics"><div><span class="label">Fix age</span><strong id="gpsAge">—</strong></div><div><span class="label">Satellites at fix</span><strong id="fixSatellites">—</strong></div><div><span class="label">HDOP at fix</span><strong id="fixHdop">—</strong></div></div>
-            <p id="fixTimestamp" class="timestamp">No acquisition timestamp yet</p>
+            <div class="position-row">
+              <div class="position-main">
+                <span class="gps-state" id="gpsState">No fix yet</span>
+                <strong id="coordinates">Waiting for a GPS fix</strong>
+                <p id="positionNote" hidden></p>
+              </div>
+              <div class="position-actions" id="positionActions" hidden><button class="chip-button" id="copyPosition">Copy</button><a class="chip-button" id="mapsLink" href="#" target="_blank" rel="noopener">Google Maps</a><button class="chip-button" id="sharePosition" hidden>Share</button></div>
+            </div>
+            <dl class="stat-grid" id="statGrid" hidden>
+              <div data-group="fix"><dt>Updated</dt><dd id="gpsAge">—</dd><span class="metric-note" id="fixTimestamp"></span></div>
+              <div data-group="fix"><dt>Satellites</dt><dd id="fixSatellites">—</dd></div>
+              <div data-group="fix"><dt>Accuracy</dt><dd id="fixAccuracy">—</dd><span class="metric-note" id="fixHdop"></span></div>
+              <div data-group="trip"><dt>Trip distance</dt><dd id="tripDistance">—</dd></div>
+              <div data-group="trip"><dt>Time with signal</dt><dd id="tripSignal">—</dd><span class="metric-note" id="tripSignalNote"></span></div>
+              <div data-group="trip"><dt>Movement</dt><dd id="tripMovement">—</dd><span class="metric-note" id="tripMovementNote"></span></div>
+            </dl>
+            <div class="trip-block" id="tripBlock" hidden>
+              <div class="trip-heading"><span id="tripRange">Trip</span><span class="timeline-legend" aria-hidden="true"><span class="key-fixed">Fix</span><span class="key-searching">Searching</span><span class="key-lost">Lost or error</span><span class="key-gap">No data</span></span></div>
+              <div class="timeline" id="signalTimeline" role="img" aria-label="Signal timeline: no readings yet"></div>
+            </div>
           </div>
-          <div class="console-footer"><span>LoRa module <strong id="loraSummary">Awaiting hub</strong></span><a href="#/hardware">View hardware details</a></div>
+          <a class="health-strip" href="#/hardware" aria-label="Hardware details">
+            <span class="health-chip" id="chipHub" data-tone="idle">Hub <b>Not connected</b></span>
+            <span class="health-chip" id="chipGps" data-tone="idle">GPS <b>Unknown</b></span>
+            <span class="health-chip" id="chipRadio" data-tone="idle">Radio <b>Unknown</b></span>
+            <span class="health-more">Hardware details</span>
+          </a>
         </article>
         <aside class="log-panel" aria-labelledby="log-title">
-          <div class="log-heading"><h2 id="log-title">Field log</h2><button id="exportLogs" class="text-button">Export</button></div>
-          <div class="log-tabs" role="group" aria-label="Log filter"><button class="selected" id="readingsTab" aria-pressed="true">Readings</button><button id="eventsTab" aria-pressed="false">Events</button><button id="clearLogs" class="clear-log">Clear</button></div>
-          <div class="log-list" id="logBody"><p class="empty-log">Your readings will appear here.</p></div>
-          <div class="log-list" id="activityList" hidden></div>
-          <div class="log-footer"><span id="messageCount">0 messages</span><span id="logCount">0 stored records</span></div>
+          <div class="log-heading"><h2 id="log-title">Field log</h2><button id="exportLogs" class="chip-button">Export</button></div>
+          <ol class="log-list" id="logBody" aria-label="Field log, newest first"></ol>
+          <div class="log-footer"><span id="logCount">0 records saved</span><button id="clearLogs" class="text-button clear-log">Clear</button></div>
         </aside>
       </div>
     </section>
     <section class="page workspace hardware-page" data-view="hardware" aria-labelledby="hardware-title" hidden>
-      <div class="workspace-heading"><h1 id="hardware-title" tabindex="-1">Under the hood<span>.</span></h1><p>One hub. Three components.</p></div>
+      <div class="workspace-heading"><h1 id="hardware-title" tabindex="-1">Hardware<span>.</span></h1><p id="hardwareSummary" class="hardware-summary" role="status">Connect the hub to check the hardware.</p></div>
       <div class="hardware-grid">
-        <article class="hardware-card"><div class="hardware-heading"><span>01 / Radio</span><h2>Ra-02</h2><strong id="loraDetail">Awaiting module status</strong></div>
-          <dl class="diagnostic-list"><div><dt>Result code</dt><dd id="loraCode">—</dd></div><div><dt>Chip version</dt><dd id="loraVersion">—</dd></div><div><dt>Check age</dt><dd id="loraChecked">—</dd></div></dl>
-          <p class="hardware-note">Readiness confirms the hub can read its radio over SPI. The pitch uses a single hub.</p>
-          <details class="wiring"><summary>SPI wiring</summary><dl class="diagnostic-list"><div><dt>SCK / MISO / MOSI</dt><dd>18 / 19 / 23</dd></div><div><dt>CS / RESET</dt><dd>5 / 14</dd></div><div><dt>DIO0 / DIO1</dt><dd>26 / 27</dd></div><div><dt>Power</dt><dd>3.3 V + GND</dd></div></dl></details>
+        <article class="hardware-card" id="hwHub" aria-labelledby="hwHubTitle">
+          <div class="hardware-heading"><div><h2 id="hwHubTitle">Hub</h2><span class="hardware-model">ESP32 · USB</span></div><span class="health-pill" data-tone="idle">Unknown</span></div>
+          <p class="hardware-status"></p>
+          <p class="hardware-fix" hidden></p>
+          <dl class="diagnostic-list hardware-facts"></dl>
+          <details class="wiring"><summary>More details</summary><dl class="diagnostic-list hardware-more"></dl></details>
         </article>
-        <article class="hardware-card gps-hardware"><div class="hardware-heading"><span>02 / Position</span><h2>NEO-6M</h2><strong id="gpsReason">Awaiting receiver data</strong></div>
-          <p class="hardware-note" id="gpsDetail">A clear view of the sky helps the receiver acquire satellites.</p>
-          <dl class="diagnostic-list"><div><dt>Acquisition wait</dt><dd id="waitTime">—</dd></div><div><dt>UART data age</dt><dd id="uartAge">—</dd></div><div><dt>Satellites used now</dt><dd id="satelliteSummary">—</dd></div><div><dt>Current HDOP</dt><dd id="hdop">—</dd></div><div><dt>Valid NMEA sentences</dt><dd id="nmeaCount">—</dd></div><div><dt>Checksum failures</dt><dd id="checksumCount">—</dd></div><div><dt>UART characters</dt><dd id="byteCount">—</dd></div></dl>
-          <details class="wiring"><summary>GPS wiring</summary><p>GPS TX → GPIO16. GPS RX → GPIO17 (optional). UART: 9600 baud. Common ground.</p></details>
+        <article class="hardware-card" id="hwGps" aria-labelledby="hwGpsTitle">
+          <div class="hardware-heading"><div><h2 id="hwGpsTitle">GPS</h2><span class="hardware-model">NEO-6M receiver</span></div><span class="health-pill" data-tone="idle">Unknown</span></div>
+          <p class="hardware-status"></p>
+          <p class="hardware-fix" hidden></p>
+          <dl class="diagnostic-list hardware-facts"></dl>
+          <details class="wiring"><summary>More details</summary><dl class="diagnostic-list hardware-more"></dl></details>
         </article>
-        <article class="hardware-card"><div class="hardware-heading"><span>03 / Hub</span><h2>ESP32</h2><strong>USB powered</strong></div>
-          <dl class="diagnostic-list"><div><dt>Last message</dt><dd id="lastPacket">—</dd></div><div><dt>USB serial</dt><dd>115200 baud</dd></div><div><dt>Protocol</dt><dd>JSON lines</dd></div></dl>
-          <p class="hardware-note" id="storageState">Hub fix storage: awaiting status</p><p class="hardware-note" id="cacheStatus">Waiting for a valid position to save.</p>
-          <p class="hardware-note">Before an indoor pitch, acquire a fix outdoors and export the session. A cold start can take time; underground reception may be unavailable.</p>
+        <article class="hardware-card" id="hwRadio" aria-labelledby="hwRadioTitle">
+          <div class="hardware-heading"><div><h2 id="hwRadioTitle">Radio</h2><span class="hardware-model">Ra-02 LoRa module</span></div><span class="health-pill" data-tone="idle">Unknown</span></div>
+          <p class="hardware-status"></p>
+          <p class="hardware-fix" hidden></p>
+          <dl class="diagnostic-list hardware-facts"></dl>
+          <details class="wiring"><summary>More details</summary><dl class="diagnostic-list hardware-more"></dl></details>
         </article>
       </div>
-      <a class="back-link" href="#/console">Return to live console</a>
+      <p class="hardware-footnote">Before an indoor pitch, get a fix outdoors near the venue. Indoors the GPS usually cannot see satellites; the console keeps the last known position.</p>
+      <a class="back-link" href="#/console">Back to live console</a>
     </section>
   </main>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

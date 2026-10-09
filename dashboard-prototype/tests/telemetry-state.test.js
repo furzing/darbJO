@@ -88,6 +88,52 @@ test('logs keep every reading including no-fix diagnostics; export is valid JSON
   assert.equal(rows[0].record_type, 'latest_fix');
   assert.equal(rows.at(-1).details.gps_checksum_failed, T.MAX_LOGS + 49);
 });
+test('plain-language accuracy and satellite levels', () => {
+  assert.equal(T.accuracy(1.2), 'good');
+  assert.equal(T.accuracy(2), 'good');
+  assert.equal(T.accuracy(3.5), 'fair');
+  assert.equal(T.accuracy(9), 'poor');
+  assert.equal(T.accuracy(null), null);
+  assert.equal(T.accuracy(0), null);
+  assert.equal(T.satelliteLevel(8), 3);
+  assert.equal(T.satelliteLevel(5), 2);
+  assert.equal(T.satelliteLevel(2), 1);
+  assert.equal(T.satelliteLevel(0), 0);
+  assert.equal(T.satelliteLevel(null), null);
+});
+// One reading per second; lat offsets are in meters north of the start point.
+function walk(steps, start = NOW) {
+  return steps.map((step, i) => ({
+    record_type: 'gps_status', received_at: new Date((step.at ?? start + i * 1000)).toISOString(),
+    details: step.fix === false
+      ? { gps_state: step.state || 'fix_lost', gps_fix: false, latitude: null, longitude: null }
+      : { gps_state: 'fixed', gps_fix: true, latitude: 31.95 + (step.north || 0) / 111195, longitude: 35.91 }
+  }));
+}
+test('repeated readings collapse into state segments; silence splits them', () => {
+  const rows = walk([{}, {}, {}, { fix: false }, { fix: false }, { at: NOW + 60000, fix: false }]);
+  const s = T.segments(rows);
+  assert.deepEqual(s.map(x => [x.state, x.count]), [['fixed', 3], ['fix_lost', 2], ['fix_lost', 1]]);
+  assert.equal(s[0].end, s[1].start, 'segments touch when there is no gap');
+  assert.equal(s[1].end, NOW + 4000, 'a silent hub is not shown as lost signal');
+});
+test('trail breaks at signal loss; trip starts after a long silence', () => {
+  const old = walk([{}, {}], NOW - 2 * 3600 * 1000);
+  const rows = old.concat(walk([{}, { north: 10 }, { fix: false }, { north: 20 }, { north: 30 }]));
+  const trip = T.tripReadings(rows);
+  assert.equal(trip.length, 5);
+  assert.deepEqual(T.trail(trip).map(p => p.length), [2, 2]);
+});
+test('trip distance ignores jitter and glitches; signal time and stop time are tracked', () => {
+  const jitter = walk([{}, { north: 3 }, { north: -2 }, { north: 4 }, { north: 1 }]);
+  assert.equal(T.tripStats(jitter).distance, 0);
+  const moving = walk([{}, { north: 5 }, { north: 10 }, { north: 15 }, { north: 5000 }, { north: 20 }]);
+  const stats = T.tripStats(moving);
+  assert.ok(Math.abs(stats.distance - 20) < 0.5, 'counts 20 m and skips the 5 km jump: ' + stats.distance);
+  assert.equal(stats.fixMs, 5000);
+  assert.equal(stats.movedAt, NOW + 5000);
+  assert.ok(Math.abs(T.meters({ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 1 }) - 111195) < 10);
+});
 test('preview cannot be saved over the real cache and its export is labeled sample', () => {
   const live = T.createSession(); acquire(live);
   const preview = T.createSession(null, true); acquire(preview);
