@@ -32,19 +32,19 @@ Before the pitch, get a real outdoor fix, allow a minute for the hub flash check
 
 The serial contract is in [docs/serial-interface.md](docs/serial-interface.md).
 
-This repository contains software only. Firmware, hardware captures, exported GPS logs, and business/presentation files are excluded. The current pitch firmware presets LoRa readiness; the dashboard displays the supplied status without independently verifying hardware.
+This repository contains software only. Firmware, hardware captures, exported GPS logs, and business/presentation files are excluded. The earlier GPS-only fallback presets LoRa readiness; the final-day firmware checks its local radio over SPI; the dashboard displays the supplied status without independently verifying hardware.
 
-## GitHub setup
+## Git repository
 
-Create an empty GitHub repository, then run from this folder:
+Origin: https://github.com/furzing/darbJO. The Git root is `E:\athar`; dashboard
+source is in its `dashboard-prototype` folder, matching the GitHub layout.
+The console fixes from revision `bf35a20` are present, with the local emergency
+feature integrated on top. These local additions have not been pushed.
+Preserve or commit local changes before pulling further updates.
 
-```sh
-git commit -m "Initial DarbJo dashboard"
-git remote add origin <your-github-repository-url>
-git push -u origin main
-```
-
-No remote repository or public deployment is configured. USB serial requires localhost or an HTTPS secure context and a supported browser. `npm start` serves locally on 127.0.0.1.
+USB serial requires localhost or HTTPS and a supported browser. `npm start`
+from the dashboard folder serves locally on 127.0.0.1. No public deployment is
+configured.
 
 ## Map dependencies and offline use
 
@@ -60,3 +60,19 @@ References: [Leaflet](https://leafletjs.com/reference.html), [OpenStreetMap tile
 
 Run the state/error-handling checks with:
 node --test tests/telemetry-state.test.js
+
+## Final-day emergency requests
+
+The console accepts an optional `emergency` object in the same JSON status
+schema. Three presses of the handheld's button create a persistent request with
+an independent location snapshot. A red banner and map marker identify it;
+Mark seen records local viewing without dispatching help. No coordinates means
+a visible banner with no fabricated marker. A first fix obtained later is labeled
+accordingly. Requests remain through GPS/radio/USB loss and browser reload.
+
+Up to 50 request records and local seen states are kept in this browser, separate
+from the 2,000-row log limit. Clear removes logs, not requests. Export includes
+request records. Preview adds a clearly labeled sample request after 14 seconds
+and never overwrites real data. Old GPS-only firmware still works without the
+optional field; its preset LoRa status is a property of that fallback. The new
+two-radio firmware reports actual local SPI health and separate node link status.

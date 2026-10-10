@@ -2,6 +2,8 @@
   'use strict';
   const SCHEMA = 'beacon.prototype.v1';
   const MAX_LOGS = 2000;
+  const MAX_EMERGENCIES = 50;
+  const EMERGENCY_SOURCES = ['unavailable', 'live_at_trigger', 'last_known', 'after_trigger'];
 
   function number(value) {
     return typeof value === 'number' && Number.isFinite(value) ? value : null;
@@ -35,9 +37,55 @@
     return {
       sample: Boolean(sample), lastFix: saved, latest: null, stream: 'waiting',
       lastMessageAt: null, messageCount: 0, lastUptime: null,
+      emergencies: cache && Array.isArray(cache.emergencies) ? cache.emergencies.map(function (value) {
+        const record = normalizeEmergency(value, Date.now());
+        if (record) {
+          record.received_at = timestamp(value.received_at) || record.received_at;
+          record.seen_at = timestamp(value.seen_at);
+        }
+        return record;
+      }).filter(Boolean).slice(-MAX_EMERGENCIES) : [],
       logs: cache && Array.isArray(cache.logs)
         ? cache.logs.filter(function (row) { return row && timestamp(row.received_at) && row.details; }).slice(-MAX_LOGS) : []
     };
+  }
+
+  function normalizeEmergency(value, at) {
+    if (!value || typeof value.id !== 'string' || !/^[0-9a-f]{16}$/i.test(value.id) ||
+        /^0{16}$/.test(value.id) || value.node_id !== 'node-01' ||
+        !EMERGENCY_SOURCES.includes(value.location_source)) return null;
+    const located = value.location_source !== 'unavailable';
+    if (located && !position(value)) return null;
+    const age = number(value.position_age_ms_at_capture);
+    return {
+      id: value.id.toLowerCase(), node_id: value.node_id,
+      trigger_boot_id: number(value.trigger_boot_id), trigger_uptime_ms: number(value.trigger_uptime_ms),
+      location_source: value.location_source,
+      latitude: located ? value.latitude : null, longitude: located ? value.longitude : null,
+      position_age_ms_at_capture: age !== null && age >= 0 ? age : null,
+      position_time_utc: timestamp(value.position_time_utc),
+      received_at: new Date(at).toISOString(), seen_at: null
+    };
+  }
+
+  function mergeEmergency(session, incoming, at) {
+    if (!incoming) return;
+    const previous = session.emergencies.find(function (item) { return item.id === incoming.id; });
+    if (!previous) {
+      session.emergencies.push(incoming);
+      if (session.emergencies.length > MAX_EMERGENCIES) session.emergencies.shift();
+      log(session, 'event', { message: 'Emergency request received', emergency: Object.assign({}, incoming) }, at);
+    } else if (previous.location_source === 'unavailable' && position(incoming)) {
+      Object.assign(previous, incoming, { received_at: previous.received_at, seen_at: previous.seen_at });
+      log(session, 'event', { message: 'Emergency location now available', emergency: Object.assign({}, previous) }, at);
+    }
+  }
+
+  function acknowledgeEmergency(session, id, at) {
+    const record = session.emergencies.find(function (item) { return item.id === id; });
+    if (!record || record.seen_at) return;
+    record.seen_at = new Date(at).toISOString();
+    log(session, 'event', { message: 'Emergency marked seen on this laptop', emergency_id: id }, at);
   }
 
   function log(session, type, details, at) {
@@ -57,6 +105,8 @@
     if (typeof data.gps_fix !== 'boolean' || typeof data.gps_state !== 'string')
       throw new Error('GPS message is missing fix status');
     if (data.gps_fix && !position(data)) throw new Error('GPS fix has invalid coordinates');
+    const emergency = data.emergency == null ? null : normalizeEmergency(data.emergency, at);
+    if (data.emergency != null && !emergency) throw new Error('Emergency request has invalid data');
 
     const previous = session.latest;
     if (session.stream !== 'active') log(session, 'event', { message: 'Hub status stream active' }, at);
@@ -84,6 +134,7 @@
         session.lastFix = incoming;
     }
 
+    mergeEmergency(session, emergency, at);
     session.latest = Object.assign({}, data);
     session.stream = 'active';
     session.lastMessageAt = at;
@@ -99,11 +150,14 @@
 
   function cache(session) {
     if (session.sample) throw new Error('Preview data cannot overwrite the live cache');
-    return { version: 2, last_fix: session.lastFix, logs: session.logs };
+    return { version: 2, last_fix: session.lastFix, logs: session.logs, emergencies: session.emergencies };
   }
 
   function exportLines(session) {
     const rows = [{ record_type: 'latest_fix', sample: session.sample, details: session.lastFix }];
+    session.emergencies.forEach(function (record) {
+      rows.push({ record_type: 'emergency', sample: session.sample, details: record });
+    });
     return rows.concat(session.logs).map(function (row) { return JSON.stringify(row); }).join('\n') + '\n';
   }
 
@@ -201,7 +255,7 @@
 
   const api = { MAX_LOGS: MAX_LOGS, createSession: createSession, applyMessage: applyMessage,
     markUnavailable: markUnavailable, log: log, cache: cache, exportLines: exportLines, position: position,
-    accuracy: accuracy, satelliteLevel: satelliteLevel, meters: meters, tripReadings: tripReadings,
+    acknowledgeEmergency: acknowledgeEmergency, accuracy: accuracy, satelliteLevel: satelliteLevel, meters: meters, tripReadings: tripReadings,
     segments: segments, trail: trail, tripStats: tripStats };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.BeaconTelemetry = api;

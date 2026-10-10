@@ -47,6 +47,10 @@
     </div>
     <section class="page workspace" data-view="console" aria-labelledby="console-title" hidden>
       <div class="workspace-heading visually-hidden"><h1 id="console-title" tabindex="-1">Live console</h1></div>
+      <section id="emergencyBanner" class="emergency-banner" aria-label="Emergency request" hidden>
+        <div class="emergency-copy" role="alert" aria-atomic="true"><h2 id="emergencyTitle">Emergency request</h2><p id="emergencyPosition"></p><p id="emergencyMeta"></p></div>
+        <div class="emergency-actions"><button id="locateEmergency" class="button button-secondary">Locate request</button><button id="markEmergencySeen" class="button emergency-seen">Mark seen</button></div>
+      </section>
       <div class="console-grid">
         <article class="position-panel" aria-label="GPS position">
           <div class="map-frame">

@@ -1,4 +1,11 @@
-# Current pitch firmware note
+# Final-day two-board firmware
+
+The ESP32-S3 node reads GPS and sends emergency requests through its Ra-02 to
+the classic ESP32 hub. The hub reports actual local SPI health and remote node
+link state. The JSON schema remains compatible; see the final-day extension
+below for node-link fields, emergency locations and local seen status.
+
+# Earlier GPS-only fallback note
 
 The GPS-only pitch firmware presets LoRa connected/ready with error code 0, chip version -1, and check age 0. It performs no SPI radio check. GPS status and retained coordinates are actual receiver data. The general protocol below also describes the original hardware-check firmware for future integration.
 
@@ -117,3 +124,72 @@ On reception loss, live latitude/longitude become null and last_fix remains popu
 
 [RadioLib SX1278 reference](https://jgromes.github.io/RadioLib/class_s_x1278.html) documents initialization, standby, and getChipVersion.
 [TinyGPSPlus implementation](https://github.com/mikalhart/TinyGPSPlus/blob/master/src/TinyGPS%2B%2B.cpp) documents committed locations, checksum statistics, and GGA satellites used.
+
+## Final-day node link and emergency extension
+
+All fields are additive to `beacon.prototype.v1` / `gps_status`. Old GPS-only
+status messages without `emergency` continue to work. Consume the classic hub's
+USB port, not the S3 diagnostic output. Status remains approximately 1 Hz;
+remote node packets normally arrive every five seconds.
+
+- `node_link`: `waiting`, `online`, `offline`; offline after 12 s without a packet.
+- `node_age_ms`: null before a packet, otherwise age of the last accepted packet.
+- `node_id`: `node-01`; `node_boot_id`, `node_sequence`, `node_uptime_ms`.
+- `rssi_dbm`, `snr_db`: last accepted packet measurements, null before reception.
+- `radio_packets`, `radio_rejected`, `radio_receive_code`: hub reception diagnostics.
+- `node_storage_status`: ready, unavailable, write_error, or unknown before reception.
+- `gps_reason`: additionally `awaiting_node` or `radio_silent`.
+- `emergency`: null before any received/restored request; otherwise the object below.
+
+Example request (illustrative coordinates):
+
+```json
+{
+  "id": "da7b000000000001",
+  "node_id": "node-01",
+  "trigger_boot_id": 12345,
+  "trigger_uptime_ms": 18000,
+  "location_source": "live_at_trigger",
+  "latitude": 31.953914,
+  "longitude": 35.910600,
+  "position_age_ms_at_capture": 350,
+  "position_time_utc": "2026-10-10T10:00:00Z"
+}
+```
+
+The ID is a nonzero 16-character hexadecimal string, stable for the request.
+Deduplicate repeated IDs. Three distinct debounced presses within two seconds
+on a normally open S3 GPIO4-to-GND button generate a new ID. The request sends
+immediately when radio is available and repeats in routine status packets.
+
+| location_source | Meaning |
+|---|---|
+| live_at_trigger | Fresh node fix at the third press. |
+| last_known | Earlier retained position; current location unconfirmed. Age can be null after reboot. |
+| unavailable | No acquired location. latitude, longitude and position time are null. Show the request without a marker. |
+| after_trigger | First live fix after an unlocated request; it is not a claimed position at the button time. |
+
+The location is a snapshot. Later normal fixes cannot move it. The same ID may
+transition from unavailable to a located request once. `position_time_utc` is
+GPS time of the location, not button time; null if GPS supplied no date/time.
+Trigger uptime belongs to trigger boot ID and can refer to an earlier node boot.
+Record laptop first-receive time separately. `position_age_ms_at_capture` remains
+the age when the snapshot was taken, not a continuously increasing age.
+
+Retain received requests across ordinary status messages with no emergency,
+GPS/radio loss, hub restart, USB disconnect, and browser reload. Node and hub each
+persist only their latest request in flash; the browser retains the newest 50.
+New requests and newly available request locations save immediately in browser
+storage. Repeated IDs must not reset `seen_at` or create duplicate event rows.
+
+Display a red map marker and persistent banner; an unlocated request still gets
+a banner. Mark seen sets local browser `seen_at`, persists it, and logs viewing.
+It does not send a command, acknowledge delivery to the node, clear its request,
+or dispatch a responder. Export includes request records and local seen state;
+Clear removes ordinary logs while retaining requests. Storage failures should
+prompt export without dropping in-memory records. Preview samples remain separate.
+
+The RF wire packet is version 2 (183 bytes). Both final-day sketches must be
+uploaded together; the previous 120-byte pair is incompatible. The dashboard's
+USB JSON schema name stays the same. Neither transport authenticates requests;
+this is a one-node direct-link pitch prototype, with no mesh or dispatch service.

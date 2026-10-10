@@ -3,6 +3,10 @@
   let map = null, marker = null, latestFix = null, following = true, context = null;
   let lastPoint = null, tileErrors = 0, tilesFailing = false, trailLayer = null, trailParts = [], trailKey = '';
   let regions = [], offlineLayers = [], offlineRenderer = null;
+  let emergencies = [], centeredEmergency = null;
+  const emergencyMarkers = new Map();
+  const sourceLabels = { live_at_trigger: 'GPS fix at request', last_known: 'Last known fix · position unconfirmed',
+    after_trigger: 'First GPS fix after request', unavailable: 'Location unavailable' };
   const el = function (id) { return document.getElementById(id); };
 
   // Offline basemap colors, from the console palette.
@@ -129,6 +133,7 @@
     });
     renderTrail();
     renderMarker();
+    renderEmergencies();
   }
   // Solid lines are runs of consecutive fixes; dashed lines bridge signal gaps.
   function renderTrail() {
@@ -148,8 +153,10 @@
     if (marker) marker.bringToFront();
   }
   function renderMarker() {
-    el('mapEmpty').hidden = Boolean(latestFix);
-    el('mapTools').hidden = !latestFix;
+    const anyPosition = Boolean(latestFix) || emergencies.some(window.BeaconTelemetry.position);
+    el('mapEmpty').hidden = anyPosition;
+    el('mapTools').hidden = !anyPosition;
+    el('followMap').disabled = !latestFix;
     if (!map) return;
     if (!latestFix) {
       if (marker) { marker.remove(); marker = null; }
@@ -174,15 +181,78 @@
     if (!lastPoint || regionAt(point) !== regionAt(lastPoint)) renderNotice();
     lastPoint = point;
   }
-  function update(fix, current, sample, trail) {
+  function locateEmergency(id) {
+    const record = emergencies.find(function (item) { return item.id === id; });
+    if (!map || !window.BeaconTelemetry.position(record)) return;
+    setFollowing(false);
+    map.setView([record.latitude, record.longitude], Math.max(map.getZoom(), 14), { animate: false });
+    const entry = emergencyMarkers.get(id);
+    if (entry) entry.marker.openPopup();
+  }
+  function popup(record) {
+    const box = document.createElement('div'); box.className = 'emergency-popup';
+    const title = document.createElement('strong');
+    title.textContent = (context.sample ? 'Sample · ' : '') + 'Emergency request'; box.append(title);
+    [record.node_id + (record.seen_at ? ' · Seen' : ' · Unseen'), sourceLabels[record.location_source],
+      record.latitude.toFixed(6) + '°, ' + record.longitude.toFixed(6) + '°',
+      'Received ' + new Date(record.received_at).toLocaleString(),
+      record.position_time_utc ? 'GPS fix ' + new Date(record.position_time_utc).toLocaleString() : 'GPS fix time unavailable'
+    ].forEach(function (text) { const p = document.createElement('p'); p.textContent = text; box.append(p); });
+    return box;
+  }
+  function renderEmergencies() {
+    if (!map) return;
+    const located = emergencies.filter(window.BeaconTelemetry.position);
+    const ids = new Set(located.map(function (record) { return record.id; }));
+    emergencyMarkers.forEach(function (entry, id) {
+      if (!ids.has(id)) { entry.marker.remove(); emergencyMarkers.delete(id); }
+    });
+    located.forEach(function (record) {
+      let entry = emergencyMarkers.get(record.id);
+      const signature = [record.location_source, record.latitude, record.longitude, record.seen_at].join('|');
+      if (!entry) {
+        const dot = L.circleMarker([record.latitude, record.longitude], {
+          radius:14, weight:3, color:'#fbfaf6', fillColor:'#9c302b', fillOpacity:1
+        }).addTo(map);
+        dot.bindTooltip((context.sample ? 'Sample · ' : '') + 'Emergency request', { className:'emergency-tooltip', direction:'top' });
+        dot.bindPopup(popup(record));
+        const path = dot.getElement();
+        if (path) {
+          path.setAttribute('tabindex', '0'); path.setAttribute('role', 'button');
+          path.setAttribute('aria-label', 'Emergency request from ' + record.node_id + ' at ' + record.latitude + ', ' + record.longitude);
+          path.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); dot.openPopup(); }
+          });
+        }
+        entry = { marker:dot, signature:signature }; emergencyMarkers.set(record.id, entry);
+      } else if (entry.signature !== signature) {
+        entry.marker.setLatLng([record.latitude, record.longitude]).setPopupContent(popup(record));
+        entry.signature = signature;
+      }
+      entry.marker.setStyle({ fillOpacity:record.seen_at ? .6 : 1 });
+      entry.marker.bringToFront();
+    });
+    const newest = located.filter(function (record) { return !record.seen_at; }).slice(-1)[0];
+    if (newest && newest.id !== centeredEmergency) {
+      centeredEmergency = newest.id;
+      locateEmergency(newest.id);
+    }
+    if (located.length) el('gpsMap').setAttribute('aria-label', 'GPS position map with ' + located.length + ' emergency request locations.');
+  }
+  function update(fix, current, sample, trail, alerts) {
     const switched = context && context.sample !== sample;
     context = { current: current, sample: sample };
     latestFix = window.BeaconTelemetry.position(fix) ? fix : null;
-    if (switched) { lastPoint = null; setFollowing(true); }
+    emergencies = Array.isArray(alerts) ? alerts : [];
+    if (switched) {
+      lastPoint = null; centeredEmergency = null; setFollowing(true);
+      emergencyMarkers.forEach(function (entry) { entry.marker.remove(); }); emergencyMarkers.clear();
+    }
     trailParts = trail || [];
     renderTrail();
     if (!latestFix) el('gpsMap').setAttribute('aria-label', 'GPS position map. No valid position acquired.');
     renderMarker();
+    renderEmergencies();
   }
-  window.DarbMap = { show: initialize, update: update };
+  window.DarbMap = { show: initialize, update: update, locateEmergency: locateEmergency };
 })();

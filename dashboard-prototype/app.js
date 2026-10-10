@@ -4,8 +4,15 @@ const CACHE_KEY = 'beacon-hub-pitch-v2';
 const REASONS = {
   none: 'Valid position available', receiver_no_fix: 'Receiver reports no position fix',
   uart_silent: 'No recent data from GPS UART', invalid_nmea: 'No recent valid NMEA sentences',
-  stale_location: 'No fresh position update'
+  stale_location: 'No fresh position update', awaiting_node: 'Waiting for the handheld node',
+  radio_silent: 'No recent packets from the handheld node'
 };
+const EMERGENCY_LABELS = {
+  live_at_trigger: 'GPS fix at request', last_known: 'Last known fix · position unconfirmed',
+  after_trigger: 'First GPS fix after request', unavailable: 'Location unavailable'
+};
+let displayedEmergencyId = null;
+let previewEmergency = null;
 let port = null, reader = null, reading = false, connecting = false;
 let preview = null, previewTimer = null, previewTick = 0, previewFix = null;
 let toastTimer = null, cacheDirty = false, storageProblem = false;
@@ -56,6 +63,8 @@ function statusModel() {
     : { tone: 'idle', title: 'Not connected', detail: fix ? lastFix + ' · connect the hub to resume' : 'Connect the hub to start' };
   if (session.stream === 'stale') return { tone: 'bad', title: 'Hub stopped sending', detail: 'Last message ' + ago(session.lastMessageAt) + ' · check the USB cable' };
   if (session.stream !== 'active') return { tone: 'pending', title: 'Waiting for the hub', detail: 'USB connected · no GPS status yet' };
+  if (data.node_link === 'waiting' || data.node_link === 'offline') return { tone: data.node_link === 'offline' ? 'bad' : 'pending',
+    title: data.node_link === 'offline' ? 'Node link lost' : 'Waiting for node', detail: lastFix + ' · hub USB is connected' };
   if (data.gps_fix === true && fix) return { tone: 'good', title: 'Live', detail: 'Updated ' + ago(session.lastMessageAt) };
   switch (data.gps_state) {
     case 'starting': case 'acquiring':
@@ -124,7 +133,25 @@ function renderSummary() {
   const trip = Telemetry.tripReadings(session.logs);
   renderTrip(trip, current);
   byId('statGrid').hidden = !fix && !trip.length;
-  window.DarbMap.update(fix, current, Boolean(preview), Telemetry.trail(trip));
+  renderEmergency(session);
+  window.DarbMap.update(fix, current, Boolean(preview), Telemetry.trail(trip), session.emergencies);
+}
+function renderEmergency(session) {
+  const unseen = session.emergencies.filter(function (item) { return !item.seen_at; });
+  const record = unseen[unseen.length - 1] || session.emergencies[session.emergencies.length - 1];
+  byId('emergencyBanner').hidden = !record;
+  displayedEmergencyId = record ? record.id : null;
+  if (!record) return;
+  byId('emergencyBanner').classList.toggle('is-seen', Boolean(record.seen_at));
+  function content(id, value) { if (byId(id).textContent !== value) byId(id).textContent = value; }
+  content('emergencyTitle', (preview ? 'Sample · ' : '') + (record.seen_at ? 'Emergency request · seen' : 'Emergency request'));
+  content('emergencyPosition', EMERGENCY_LABELS[record.location_source] + (Telemetry.position(record)
+    ? ' · ' + record.latitude.toFixed(6) + '°, ' + record.longitude.toFixed(6) + '°' : ' · waiting for GPS'));
+  content('emergencyMeta', record.node_id + ' · received ' + timeLabel(record.received_at) +
+    (unseen.length > 1 ? ' · ' + unseen.length + ' unseen requests' : '') +
+    (record.seen_at ? ' · Seen on this laptop' : ''));
+  byId('locateEmergency').disabled = !Telemetry.position(record);
+  byId('markEmergencySeen').hidden = Boolean(record.seen_at);
 }
 // Health of each hardware part, in plain language. Used by the hardware page and the console strip.
 function hardwareModel() {
@@ -162,6 +189,8 @@ function hardwareModel() {
   else if (state === 'uart_silent') gps = { tone: 'bad', pill: 'Not responding', text: 'No data is coming from the GPS module.', fix: 'Check GPS power and the GPS TX → GPIO16 wire.' };
   else if (state === 'data_error') gps = { tone: 'bad', pill: 'Unreadable', text: 'Data arrives from the GPS but cannot be read.', fix: 'Check the wiring and that the GPS runs at 9600 baud.' };
   else gps = { tone: 'idle', pill: 'Unknown', text: 'Waiting for GPS status.' };
+  if (fresh && (data.node_link === 'waiting' || data.node_link === 'offline')) gps = { tone: 'pending', pill: 'No node data',
+    text: 'The hub is waiting for GPS packets from the handheld node.', fix: 'Power the S3 node and check both radio connections.' };
   const rating = Telemetry.accuracy(data.hdop);
   gps.facts = [
     ['Satellites now', fresh ? label(data.satellites) : '—'],
@@ -173,7 +202,8 @@ function hardwareModel() {
   ];
   gps.more = [['Valid sentences', label(data.gps_sentences_passed)], ['Checksum errors', label(data.gps_checksum_failed)],
     ['Characters received', label(data.gps_chars_processed)], ['Status reason', REASONS[data.gps_reason] || '—'],
-    ['Wiring', 'GPS TX → GPIO16, RX → GPIO17'], ['GPS serial', '9600 baud']];
+    ['Wiring on S3 node', 'GPS TX → GPIO16, RX → GPIO17'], ['GPS serial', '9600 baud'],
+    ['Emergency contact', 'GPIO4 to GND, three contacts in 2 s']];
 
   const chip = number(data.lora_chip_version), verified = chip !== null && chip >= 0;
   let radio;
@@ -363,9 +393,18 @@ function eventItem(row, key) {
   const time = feedRow('time', '', clockTime(Date.parse(row.received_at))); time.dateTime = row.received_at;
   head.append(feedRow('span', 'feed-title', known[0]), time);
   item.append(head);
-  const extra = row.details.message === 'Ra-02 module error' && row.details.error_code !== undefined ? 'Code ' + row.details.error_code
+  const emergency = row.details.emergency;
+  const extra = emergency ? emergency.node_id + ' · ' + EMERGENCY_LABELS[emergency.location_source] +
+    (Telemetry.position(emergency) ? ' · ' + positionText(emergency) : '')
+    : row.details.message === 'Ra-02 module error' && row.details.error_code !== undefined ? 'Code ' + row.details.error_code
     : row.details.line || row.details.error || '';
   if (extra) item.append(feedRow('span', 'feed-meta', extra));
+  if (emergency || row.details.emergency_id) {
+    item.classList.add('emergency-log');
+    const raw = document.createElement('details'); raw.className = 'feed-raw';
+    raw.append(feedRow('summary', '', 'Request details'), feedRow('pre', '', JSON.stringify(row, null, 2)));
+    item.append(raw);
+  }
   return item;
 }
 // One feed, newest first: runs of GPS readings plus hub and connection events.
@@ -406,8 +445,10 @@ function processLine(line) {
     return;
   }
   try {
+    const before = live.emergencies.map(function (record) { return record.id + ':' + record.location_source; }).join('|');
     Telemetry.applyMessage(live, JSON.parse(line), Date.now());
     cacheDirty = true;
+    if (before !== live.emergencies.map(function (record) { return record.id + ':' + record.location_source; }).join('|')) flushCache();
     setConnection();
   } catch (error) {
     event('Invalid serial message ignored', { error: error.message, line: line.slice(0, 512) });
@@ -480,6 +521,11 @@ function previewStep() {
   };
   const state = t < 5 ? 'starting' : t < 10 ? 'acquiring' : fixed ? 'fixed' : 'fix_lost';
   const snapshot = previewFix ? Object.assign({}, previewFix, { age_ms: now - previewFix.acquired }) : null;
+  if (t === 14 && !previewEmergency && previewFix) previewEmergency = {
+    id: 'da7b000000000001', node_id: 'node-01', trigger_boot_id: 1, trigger_uptime_ms: 14000,
+    location_source: 'live_at_trigger', latitude: previewFix.latitude, longitude: previewFix.longitude,
+    position_age_ms_at_capture: 0, position_time_utc: previewFix.gps_time_utc
+  };
   Telemetry.applyMessage(preview, {
     schema: 'beacon.prototype.v1', type: 'gps_status', hub_uptime_ms: previewTick * 1000,
     gps_state: state, gps_reason: fixed ? 'none' : 'receiver_no_fix', gps_fix: fixed,
@@ -489,11 +535,20 @@ function previewStep() {
     gps_chars_processed: t * 500, gps_sentences_passed: t * 6, gps_checksum_failed: 0,
     lora_connected: !(t >= 28 && t < 31), lora_status: t >= 28 && t < 31 ? 'error' : 'ready',
     lora_error_code: t >= 28 && t < 31 ? -2 : 0, lora_chip_version: 18, lora_check_age_ms: 500,
-    storage_status: 'ready', last_fix: snapshot
+    storage_status: 'ready', last_fix: snapshot, emergency: previewEmergency
   }, now);
   renderLogs();
 }
 byId('connectButton').addEventListener('click', connectHub);
+byId('locateEmergency').addEventListener('click', function () {
+  window.DarbMap.locateEmergency(displayedEmergencyId);
+});
+byId('markEmergencySeen').addEventListener('click', function () {
+  Telemetry.acknowledgeEmergency(activeSession(), displayedEmergencyId, Date.now());
+  if (!preview) { cacheDirty = true; flushCache(); }
+  renderLogs();
+});
+
 byId('guideConnect').addEventListener('click', connectHub);
 byId('guideSample').addEventListener('click', function () { byId('previewMode').click(); });
 byId('liveMode').addEventListener('click', function () {
@@ -505,7 +560,7 @@ byId('previewMode').addEventListener('click', function () {
   if (preview) return;
   if (port || connecting) { toast('Disconnect the hub before viewing sample data.'); return; }
   preview = Telemetry.createSession(null, true);
-  previewTick = 0; previewFix = null;
+  previewTick = 0; previewFix = null; previewEmergency = null;
   setConnection();
   previewStep();
   previewTimer = setInterval(previewStep, 1000);
